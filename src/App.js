@@ -2,27 +2,27 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import Webcam from 'react-webcam';
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
-// import '@tensorflow/tfjs-backend-wasm';
 import { drawKeypoints, drawSkeletonLines } from './utilities';
 
 function App() {
   const webcamRef = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const containerRef = useRef(null); // Added container reference
   const [model, setModel] = useState(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [drawSkeleton, setDrawSkeleton] = useState(false);
   const [isLoadingModel, setIsLoadingModel] = useState(true);
-  const [videoFile, setVideoFile] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processedVideo, setProcessedVideo] = useState(null);
-  const [processingProgress, setProcessingProgress] = useState(0);
+  const [frameRate, setFrameRate] = useState(0);
+  
+  const frameCountRef = useRef(0);
+  const lastFrameTimeRef = useRef(performance.now());
 
-  // Load MoveNet model
+
+
   useEffect(() => {
     const loadModel = async () => {
       setIsLoadingModel(true);
-      // await tf.setBackend('wasm');
       await tf.setBackend('webgl');
       await tf.ready();
       const detectorConfig = { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING };
@@ -33,7 +33,8 @@ function App() {
     loadModel();
   }, []);
 
-  function drawResults(poses) {
+
+  const drawResults = useCallback((poses) => {
     const ctx = canvasRef.current.getContext("2d");
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.font = "40px Roboto Condensed";
@@ -44,16 +45,33 @@ function App() {
         drawSkeletonLines(pose.keypoints, 0.5, ctx);
       }
     });
-  }
-
+  }, [drawSkeleton]);
   // Pose detection function - Memoize with useCallback
   const detectPose = useCallback(async () => {
     if (webcamRef.current && model) {
+      const now = performance.now();
+      const elapsed = now - lastFrameTimeRef.current;
+  
+      // Update state if more than one second has passed since last update
+      if (elapsed >= 1000) {
+        setFrameRate(frameCountRef.current); // Update frame rate display
+        frameCountRef.current = 0; // Reset frame count
+        lastFrameTimeRef.current = now; // Reset the last frame time
+      } else {
+        frameCountRef.current += 1; // Increment the frame count
+      }
+  
       const video = webcamRef.current.video;
       const poses = await model.estimatePoses(video, { flipHorizontal: false });
       drawResults(poses);
     }
   }, [model, drawResults]);
+  
+  const videoConstraints = {
+    width: 1280, // You can specify width
+    height: 720, // And height, or leave them to be automatically selected based on the aspectRatio
+    aspectRatio: 16 / 9
+  };
 
 
   // Function to clear the canvas
@@ -104,8 +122,7 @@ function App() {
     }
   };
 
-  // Draw video on canvas
-  const drawVideoOnCanvas = () => {
+  const drawVideoOnCanvas = useCallback(() => {
     const ctx = canvasRef.current.getContext('2d');
     const video = videoRef.current;
 
@@ -113,18 +130,13 @@ function App() {
       if (!video.paused && !video.ended) {
         ctx.drawImage(video, 0, 0, canvasRef.current.width, canvasRef.current.height);
 
-        // Calculate sizeScale based on canvas and video dimensions
-        const scaleWidth = canvasRef.current.width / video.videoWidth;
-        const scaleHeight = canvasRef.current.height / video.videoHeight;
-        const sizeScale = Math.min(scaleWidth, scaleHeight) * 5;
-
+        // If model exists, perform pose detection
         if (model) {
-          // Perform pose detection
-          const poses = await model.estimatePoses(canvasRef.current);
+          const poses = await model.estimatePoses(video); // Assuming the model expects a video element
           poses.forEach((pose) => {
-            // Pass sizeScale to the drawing functions
-            drawKeypoints(pose.keypoints, 0.5, ctx, 1, sizeScale);
-            drawSkeletonLines(pose.keypoints, 0.5, ctx, 1, sizeScale);
+            // Assuming drawKeypoints and drawSkeletonLines are correctly defined to draw on the canvas
+            drawKeypoints(pose.keypoints, 0.5, ctx);
+            drawSkeletonLines(pose.keypoints, 0.5, ctx);
           });
         }
 
@@ -133,29 +145,46 @@ function App() {
     };
 
     video.addEventListener('play', renderFrame);
-  };
 
+    // Cleanup function
+    return () => video.removeEventListener('play', renderFrame);
+  }, [model]);
   useEffect(() => {
     if (videoRef.current) {
       drawVideoOnCanvas();
     }
-  }, [videoRef.current]);
+  }, [drawVideoOnCanvas]);
 
 
 
 
+
+  // Toggle fullscreen function
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().catch(err => {
+        alert(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+      });
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      }
+    }
+  };
 
   return (
     <div className="App">
       <header className="App-header">
         {isLoadingModel && <p>Loading model, please wait...</p>}
-        <div style={{ position: 'relative', width: '1280px', height: '960px' }}>
-          {isCameraActive && <Webcam ref={webcamRef} style={{ width: '100%', height: '100%' }} />}
+        <div ref={containerRef} style={{ position: 'relative', width: '100%', maxWidth: '1280px', height: 'auto' }}>
+          {isCameraActive && <Webcam ref={webcamRef} style={{ width: '100%', height: 'auto' }} videoConstraints={videoConstraints} />}
           <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
         </div>
         <button onClick={toggleCamera}>{isCameraActive ? "Stop Camera" : "Start Camera"}</button>
         <button onClick={toggleSkeletonDrawing}>{drawSkeleton ? "Hide Skeleton" : "Show Skeleton"}</button>
+        <button onClick={toggleFullscreen}>Toggle Fullscreen</button>
         <input type="file" accept="video/*" onChange={handleVideoUpload} />
+        <p>Frame Rate: {frameRate} fps</p>
         <video ref={videoRef} style={{ display: 'none' }} onLoadedMetadata={drawVideoOnCanvas}></video>
       </header>
     </div>
